@@ -32,15 +32,10 @@ import uuid
 import re
 import subprocess
 
-import aiohttp
-import aiofiles
-
 import urllib.request
 from shutil import copyfile
 import pythoncom
 import logging
-from logging.handlers import RotatingFileHandler
-
 import sys
 import ctypes
 import asyncio
@@ -50,7 +45,7 @@ import gmqtt
 import socket
 from gmqtt import Client as MQTTClient
 
-SofaAgentVersion = 2020030402
+SofaAgentVersion = 101018025
 
 
 ## from Sens.h
@@ -106,15 +101,12 @@ class SensLogon(win32com.server.policy.DesignatedWrapPolicy):
 
 class gmqttClient():
 
-    def __init__(self, app, log=None):
+    def __init__(self, app):
         self.app=app
         #self.endpointId=self.app.devicePath.replace('/',':')
         self.deviceId=self.app.deviceId
         self.connected=False
-        if not log:
-            self.log = logging.getLogger('sofamqtt')
-        else:
-            self.log = log
+        self.log = logging.getLogger('sofamqtt')
         self.log.info('.. MQTT Module initialized')
         self.topic='sofa/pc'
         self.broker='mqtt://home.dayton.home'
@@ -157,7 +149,6 @@ class gmqttClient():
         
         try:
             if 'op' in event:
-                self.log.info('.. on_message: %s' % event)
                 print('OP: %s' % event['op'])
                 if event['op']=='discover':
                     self.sendState()
@@ -185,153 +176,12 @@ class gmqttClient():
 
 class syslaunch():
 
-    def __init__(self, app, log, python_path="C:\\Program Files\\Python3", agent_path="C:\\Program Files\SofaAgent"):
+    def __init__(self, app):
         self.app=app
-        self.log = log
-        self.python_path=python_path
-        self.agent_path=agent_path
-
-    def getusertoken(self,whichproc):
-        # process.get_pids(procname) returns a list of the pids of runningcopies of "<procname>"
-        # for "winlogon" I suppose there is only one copy
-        system=wmi.WMI ()
-        p = system.ExecQuery('select * from Win32_Process where Name="'+whichproc+'"') 
-        if (whichproc=="winlogon.exe"):
-            wlproc=p[0].Properties_('ProcessId').Value
-        else:
-            wlproc=p[len(p)-1].Properties_('ProcessId').Value
-        p = win32api.OpenProcess(1024, 0, wlproc)
-        #t = win32security.OpenProcessToken(p, win32security.TOKEN_DUPLICATE | win32security.TOKEN_ADJUST_PRIVILEGES)
-        t = win32security.OpenProcessToken(p, win32security.TOKEN_ALL_ACCESS)
-        return win32security.DuplicateTokenEx(t,
-                win32security.SecurityIdentification,
-                win32con.MAXIMUM_ALLOWED,
-				win32security.TokenPrimary,
-				win32security.SECURITY_ATTRIBUTES())
-
-
-    def killProgram(self,name):
-        try:
-            system=wmi.WMI ()
-            p = system.ExecQuery('select * from Win32_Process where Name="'+name+'"')
-            if len(p)>0:
-                pid=p[0].Properties_('ProcessId').Value
-
-                #pid=self.GetProcessID(name)
-                self.log.info('PID: '+str(pid))
-                if pid:
-                    self.log.info('Found target process: '+str(name)+' as pid '+str(pid))
-                    handle = ctypes.windll.kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
-                    self.log.info('Found target handle: '+str(name)+' as pid '+str(handle))
-                    win32api.TerminateProcess(handle, -1)
-                else:
-                    self.log.info('Could not find PID for '+str(name))
-            else:
-                self.log.info('Could not find target process: '+str(name))
-        except Exception as e:
-            self.log.info("Kill Program Error: %s" % name,exc_info=True)  
-
-    def listusertokens(self):
-
-        try:
-            WMI = win32com.client.GetObject('winmgmts:')
-            processes = WMI.InstancesOf('Win32_Process')
-            process_list = [(p.Properties_("ProcessID").Value, p.Properties_("Name").Value) for p in processes]
-            self.log.error('Process List: '+str(process_list),exc_info=True)
-        except:
-            self.log.error('LUT Error: ',exc_info=True)
-
-
-    def launchWinLogonProcess(self, script_name):
-
-        try:
-            #processshortname="newunlock"
-            processname='"%s\\pythonw.exe" "%s\\tools\\%s.py"' % (self.python_path, self.agent_path, script_name)
-            self.log.info('.. preparing to run %s in Login context' % processname)
-            #processname="c:\\programdata\\central\\cv_x64.exe"
-            new_privs = ((win32security.LookupPrivilegeValue('',win32security.SE_SECURITY_NAME),win32con.SE_PRIVILEGE_ENABLED),
-                (win32security.LookupPrivilegeValue('',win32security.SE_TCB_NAME),win32con.SE_PRIVILEGE_ENABLED),
-                (win32security.LookupPrivilegeValue('',win32security.SE_SHUTDOWN_NAME),win32con.SE_PRIVILEGE_ENABLED),
-                (win32security.LookupPrivilegeValue('',win32security.SE_RESTORE_NAME),win32con.SE_PRIVILEGE_ENABLED),
-                (win32security.LookupPrivilegeValue('',win32security.SE_TAKE_OWNERSHIP_NAME),win32con.SE_PRIVILEGE_ENABLED),
-                (win32security.LookupPrivilegeValue('',win32security.SE_CREATE_PERMANENT_NAME),win32con.SE_PRIVILEGE_ENABLED),
-                (win32security.LookupPrivilegeValue('',win32security.SE_ENABLE_DELEGATION_NAME),win32con.SE_PRIVILEGE_ENABLED),
-                (win32security.LookupPrivilegeValue('',win32security.SE_CHANGE_NOTIFY_NAME),win32con.SE_PRIVILEGE_ENABLED),
-                (win32security.LookupPrivilegeValue('',win32security.SE_DEBUG_NAME),win32con.SE_PRIVILEGE_ENABLED),
-                (win32security.LookupPrivilegeValue('',win32security.SE_PROF_SINGLE_PROCESS_NAME),win32con.SE_PRIVILEGE_ENABLED),
-                (win32security.LookupPrivilegeValue('',win32security.SE_SYSTEM_PROFILE_NAME),win32con.SE_PRIVILEGE_ENABLED),
-                (win32security.LookupPrivilegeValue('',win32security.SE_LOCK_MEMORY_NAME),win32con.SE_PRIVILEGE_ENABLED)
-            )
-            
-            self.killProgram('LockApp.exe')
-            # session=ctypes.windll.kernel32.WTSGetActiveConsoleSessionId()
-            # token = win32ts.WTSQueryUserToken(session) 
-            si=win32process.STARTUPINFO()
-            si.lpDesktop="Winsta0\\Winlogon"
-            self.log.info("+++ Local: WinLogon context launch: "+processname)
-            self.listusertokens()
-            token=self.getusertoken('winlogon.exe')
-            #token=self.getusertoken('LockAppHost.exe')
-
-            old_privs=win32security.AdjustTokenPrivileges(token,0,new_privs)
-            pinfo = win32process.CreateProcessAsUser( 
-                token, 
-                None, 
-                processname, 
-                None, 
-                None, 
-                False, 
-                win32con.NORMAL_PRIORITY_CLASS | win32con.CREATE_NEW_CONSOLE, 
-                None, 
-                None, 
-                si) 
-            self.log.info("+++ Local: launch finished with pinfo "+str(pinfo))
-        except Exception as e:
-            self.log.info("Error: %s" % e )
-
-    def launchUserProcess(self,processname):
-        # Locates the user session and launches a windows executable as the user
-        try:
-            session=ctypes.windll.kernel32.WTSGetActiveConsoleSessionId()
-            token = win32ts.WTSQueryUserToken(session) 
-            environment = win32profile.CreateEnvironmentBlock(token, False)
-            si=win32process.STARTUPINFO()
-            self.log.info("+++ Local: launchUserProcess: "+processname)
-            pinfo = win32process.CreateProcessAsUser( 
-                    token, 
-                    None, 
-                    processname, 
-                    None, 
-                    None, 
-                    False, 
-                    win32con.NORMAL_PRIORITY_CLASS | win32con.CREATE_NEW_CONSOLE, 
-                    environment, 
-                    None, 
-                    si) 
-            self.log.info("launchUserProcess: "+processname+" as "+str(pinfo))
-            return pinfo
-        except Exception as e:
-            e = sys.exc_info()[1]
-            (error_number, error_name, error_message) = e
-            if error_number==1008:
-                self.log.info("Could not launch "+processname+" as logged on user.  No user session is available.")
-            else:
-                self.log.info("launchUserProcess Error: %s" % e, exc_info=True)
-            return False
-
-    def unlockPC(self):
-        try:
-            self.launchWinLogonProcess("unlock")
-        except:
-            self.log.error('Error unlocking workstation', exc_info=True)
-
+        self.log = logging.getLogger('sofasyslaunch')
+    
     def lockPC(self):
-        try:
-            self.log.info('.. sending ctypes lockworkstation')
-            self.launchUserProcess("C:\\windows\\system32\\rundll32.exe user32.dll, LockWorkStation")
-            self.log.info('.. ok i did it')
-        except:
-            self.log.error('Error locking workstation', exc_info=True)
+        ctypes.windll.user32.LockWorkStation()
          		        
     def suspendPC(self):
         
@@ -359,78 +209,30 @@ class syslaunch():
             e = sys.exc_info()[1]
             self.log.info("Error: %s" % e )
 
+
+
 class sofaPCAgent():
     
     def __init__(self, isrunning=False):
-        self.config={}
-        self.config['token']=None
-        self.config['pcname']="pc2@dayton.tech"
-        self.config['password']="@@agent22"
-        self.config['server']="https://home.dayton.home"
-        self.config['logpath']="C:\\ProgramData\\"
+
         self.isrunning=isrunning
         self.deviceId=socket.gethostname()
         self.filepath="C:\\Program Files\\SofaAgent"
         self.updatePollTime=6000
         self.lastUpdateCheck=datetime.datetime.now()
-        self.token=self.config['token']
 
         pythoncom.CoInitialize()
-        # self.loop = asyncio.get_event_loop()
-        # https://github.com/mhammond/pywin32/issues/1452
-        self.loop = self.create_selector_event_loop()
+        self.loop = asyncio.get_event_loop()
         self.adaptername='sofapc'
-        self.logsetup(self.config['logpath'], "sofa-pcagent", 'INFO', errorOnly=['gmqtt'])
+        self.logsetup('INFO',errorOnly=['gmqtt.mqtt.protocol','gmqtt.mqtt.handler','gmqtt.mqtt.package'])
 
-        self.launch=syslaunch(self, self.log)
-        self.mqttclient = gmqttClient(self, log=self.log)
+        self.launch=syslaunch(self)
+        self.mqttclient = gmqttClient(self)
         self.notify=self.mqttclient.notify
+        #self.sendChangeReport=self.mqttclient.sendChangeReport
+        self.log.info('-----------------')
 
-    def create_selector_event_loop(self):
-        import selectors
-        selector = selectors.SelectSelector()
-        return asyncio.SelectorEventLoop(selector)
-
-
-    def logsetup(self, logbasepath, logname, level="INFO", errorOnly=[]):
-
-        log_formatter = logging.Formatter('%(asctime)-6s.%(msecs).03d %(filename).8s %(levelname).1s%(lineno)4d: %(message)s','%m/%d %H:%M:%S')
-        logpath=os.path.join(logbasepath, logname)
-        logfile=os.path.join(logpath,"%s.log" % logname)
-        errorfile=os.path.join(logpath,"%s.err.log" % logname)
-        loglink=os.path.join(logbasepath,"%s.log" % logname)
-        if not os.path.exists(logpath):
-            os.makedirs(logpath)
-        #check if a log file already exists and if so rotate it
-
-        needRoll = os.path.isfile(logfile)
-        log_handler = RotatingFileHandler(logfile, mode='a', maxBytes=1024*1024, backupCount=5)
-        log_handler.setFormatter(log_formatter)
-        log_handler.setLevel(getattr(logging,level))
-        if needRoll:
-            log_handler.doRollover()
-
-        console = logging.StreamHandler()
-        console.setFormatter(log_handler)
-        console.setLevel(getattr(logging,level))
-        
-        logging.getLogger(logname).addHandler(console)
-        #logging.getLogger(logname).addHandler(log_error)
-        
-        self.log =  logging.getLogger(logname)
-        self.log.setLevel(getattr(logging,level))
-        self.log.addHandler(log_handler)
-        self.log.info('-- -----------------------------------------------')
-
-        for lg in logging.Logger.manager.loggerDict:
-            for item in errorOnly:
-                if lg.startswith(item):
-                    logging.getLogger(lg).setLevel(logging.ERROR)
-                
-
-
-
-    def Oldlogsetup(self, level="INFO", errorOnly=[]):
+    def logsetup(self, level="INFO", errorOnly=[]):
         
         loglevel=getattr(logging,level)
         logging.basicConfig(level=loglevel, format='%(asctime)-6s.%(msecs).03d %(levelname).1s %(lineno)4d %(threadName)-.1s: %(message)s',datefmt='%m/%d %H:%M:%S', filename='c:\\programdata\\%s.log' % self.adaptername,)
@@ -467,11 +269,11 @@ class sofaPCAgent():
         hwinsta.SetProcessWindowStation()
         try:
             curr_desktop=win32service.OpenInputDesktop(0,True,win32con.MAXIMUM_ALLOWED)
-            self.log.info('.. Requested Lock State: Unlocked')
+            self.log.info('Requested Lock State: Unlocked')
             return 'UNLOCKED'
 
         except:
-            self.log.info('.. Requested Lock State: Locked',exc_info=True)
+            self.log.info('Requested Lock State: Locked',exc_info=True)
             return 'LOCKED'
 
     def initSensEventMonitor(self):
@@ -516,93 +318,37 @@ class sofaPCAgent():
             if delta.seconds>self.updatePollTime:
                 self.checkForUpdates()
 
-    async def login_to_server(self):
+            
+    def checkForUpdates(self):
         try:
-            login_data={ "user": self.config['pcname'], "password": self.config['password'] }
-
-            async with aiohttp.ClientSession() as client:
-                async with client.post(self.config['server']+"/login", data=login_data) as response:
-                    login_result=await response.json()
-                    if 'token' in login_result:
-                        self.token=login_result['token']
-                    else:
-                        self.token=None
-        except:
-            self.log.error('.. Error getting token for sofa server', exc_info=True)
-        return self.token
-
-    async def server_get(self, path):
-        try:
-            headers={ 'authorization': self.token }
-
-            async with aiohttp.ClientSession() as client:
-                async with client.get(self.config['server']+"/"+path, headers=headers) as response:
-                    result_data=await response.json()
-                    return result_data
-        except:
-            self.log.error('.. Error getting data from server: %s' % url, exc_info=True)
-            return {}
-
-    async def server_get_file(self, path, filename):
-        try:
-            headers={ 'authorization': self.token }
-            WINDOWS_LINE_ENDING = b'\r\n'
-            UNIX_LINE_ENDING = b'\n'
-
-            async with aiohttp.ClientSession() as client:
-                async with client.get(self.config['server']+"/"+path, headers=headers) as resp:
-                    if resp.status == 200:
-                        f = await aiofiles.open(filename, mode='wb')
-                        raw=await resp.read()
-                        dos=raw.replace(WINDOWS_LINE_ENDING, UNIX_LINE_ENDING)
-                        await f.write(await resp.read())
-                        await f.close()
-        except:
-            self.log.error('.. Error getting data from server: %s' % url, exc_info=True)
-            return None
-
-    async def checkForUpdates(self):
-        try:
-            self.log.info('.. Agent Version: %s' % SofaAgentVersion)
+            self.log.info('Current Agent Version: %s' % SofaAgentVersion)
         except:
             self.log.error('Error showing version', exc_info=True)
             return False
 
         try:
-            if not self.token:
-                self.log.info('.. Acquiring new access token')
-                newtoken = await self.login_to_server()
-
-            if not self.token:
-                self.log.error('.. Could not acquire new token.')
-                return False
-            
-            self.log.info('.. new token acquired: %s...' % self.token[:10])
-        except:
-            self.log.error('.. Error dealing with token %s.' % self.token, exc_info=true)
-            return False
-
-        try:
             self.lastUpdateCheck=datetime.datetime.now()
-            versiondata=await self.server_get('var/pc/agentversion')
-            if 'version' in versiondata:
-                serverversion=versiondata['version']
-                self.log.info('.. Server Agent Version: %s' % serverversion)
-                
-                if str(SofaAgentVersion) != str(serverversion):
-                    try:
-                        self.log.info('.. Downloading version %s' % serverversion)
-                        await self.server_get_file('var/pc/agent', "%s\sofaagent.py.new" % self.filepath )
-                        self.log.info('.. New version %s available as %s\sofaagent.py.new' % (serverversion,self.filepath))
-                        copyfile("%s\sofaagent.py" % self.filepath, "%s\sofaagent.py.old" % self.filepath)
-                        copyfile("%s\sofaagent.py.new" % self.filepath, "%s\sofaagent.py" % self.filepath)
-                        
-                        # attempt to restart service
-                        DETACHED_PROCESS = 0x00000008
-                        results = subprocess.Popen(['%s\sofa-restart.bat' % self.filepath], close_fds=True, creationflags=DETACHED_PROCESS)
+            url = 'https://home.dayton.home/var/pc/agentversion'
+            data = urllib.request.urlopen(url)
+            versioninfo=data.read()
+            serverversion=versioninfo.decode()
+            self.log.info('Server Agent Version: %s' % serverversion)
+            
+            if str(SofaAgentVersion) != str(serverversion):
+                try:
+                    self.log.info('Downloading version %s' % serverversion)
+                    url = 'https://home.dayton.home/var/pc/agent'
+                    urllib.request.urlretrieve(url, "%s\sofaagent.py.new" % self.filepath)
+                    self.log.info('New version %s available as %s' % (serverversion,"%s\sofaagent.py.new" % self.filepath))
+                    copyfile("%s\sofaagent.py" % self.filepath, "%s\sofaagent.py.old" % self.filepath)
+                    copyfile("%s\sofaagent.py.new" % self.filepath, "%s\sofaagent.py" % self.filepath)
+                    
+                    # attempt to restart service
+                    DETACHED_PROCESS = 0x00000008
+                    results = subprocess.Popen(['%s\sofa-restart.bat' % self.filepath], close_fds=True, creationflags=DETACHED_PROCESS)
 
-                    except:
-                        self.log.error('Error updating to current version %s' % serverversion, exc_info=True)
+                except:
+                    self.log.error('Error updating to current version %s' % serverversion, exc_info=True)
         
         except:
             self.log.error('Error with Check for Update', exc_info=True)
@@ -624,39 +370,33 @@ class sofaPCAgent():
                 
     async def setState(self, prop, value):
     
-        try:
-            self.log.info('.< setstate %s %s' % (prop,value))
-            if prop=='powerState':
-                if value=="OFF":
-                    await self.updateState('lockState','LOCKED')
-                    await self.updateState('powerState','OFF')
-                    time.sleep(.5)
-                    self.launch.suspendPC()
-                    
-            elif prop=='lockState':
-                if value=="UNLOCKED":
-                    self.log.info('.. running unlockPC: %s' % dir(self.launch))
-                    self.launch.unlockPC()
-                elif value=="LOCKED":
-                    self.log.info('.. running lockPC: %s' % dir(self.launch))
-                    self.launch.lockPC()
-                    await self.updateState('lockState','LOCKED')
-        except:
-            self.log.error('!! error setting state: %s %s' % (prop,value), exc_info=True)
+        if prop=='powerState':
+            if value=="OFF":
+                await self.updateState('lockState','LOCKED')
+                await self.updateState('powerState','OFF')
+                time.sleep(.5)
+                self.launch.suspendPC()
+                
+        elif prop=='lockState':
+            if value=="UNLOCKED":
+                self.log.info('PC Unlock not implemented yet')
+            elif value=="LOCKED":
+                await self.updateState('lockState','LOCKED')
+                self.launch.lockPC()
                 
 
     def start(self):
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self.checkForUpdates())
+        self.checkForUpdates()
         self.initPowerEventMonitor()
         self.initSensEventMonitor()
-        #self.initMediaKeys()
+        self.initMediaKeys()
         self.state={ 'powerState' : 'ON', 'lockState' : self.requestLockState() }
+        asyncio.set_event_loop(self.loop)
         self.loop.run_until_complete(self.mqttclient.start())
         self.loop.run_until_complete(self.mainloop())	
 
     async def forwardevent(self, eventType, event, data=''):
-        self.log.info(".. %s - %s %s %s" % (str(datetime.datetime.now()), eventType, event, data))
+        self.log.info("%s - %s %s %s" % (str(datetime.datetime.now()), eventType, event, data))
 
     def stop(self):
         self.log.info('Sofa Agent Service is being stopped')
@@ -751,10 +491,10 @@ class SMWinservice(win32serviceutil.ServiceFramework):
         '''
         Called when the service is asked to start
         '''
+        self.start()
         servicemanager.LogMsg(servicemanager.EVENTLOG_INFORMATION_TYPE,
                               servicemanager.PYS_SERVICE_STARTED,
                               (self._svc_name_, ''))
-        self.start()
         self.main()
 
     def start(self):

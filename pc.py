@@ -183,10 +183,10 @@ class pcServer(sofabase):
                                 line = agentfile.readline()
                     
                             self.log.info('Current Agent Version is: %s' % version )
-                            return version
+                            return { "version" : version }
                     except:
                         self.log.error('Error determining Agent Version',exc_info=True)
-                        return "0000"
+                        return { "version" : version }
 
                 if itempath=="agent":
                     try:
